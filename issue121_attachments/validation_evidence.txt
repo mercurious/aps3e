@@ -1,0 +1,19 @@
+=== aPS3e VkPipelineCache fix — on-device validation ===
+Device: Retroid Pocket Flip2 / Snapdragon SM8250 / Adreno 650 / Turnip (Mesa) 26.1.2
+Title : GT5P (NPUA80075), DRM-spawn (EBOOT.BIN launcher -> EMAIN.SELF game)
+
+--- driver confirmed (renderer, not just probe) ---
+·A 0:00:00.061469 {TID: 508904586416} RSX: Found Vulkan-compatible GPU: 'Turnip Adreno (TM) 650' running on driver 26.1.2
+
+--- WARM relaunch: the 93 MB game-context cache loads + re-saves ---
+·! 0:00:00.111993 {TID: 508904586416} RSX: Loaded Vulkan pipeline cache (12985 bytes)
+·! 0:00:00.151504 {RSX [0x0000000]} RSX: Saved Vulkan pipeline cache (12985 bytes)
+·! 0:00:00.935994 {RSX [0x0001000]} RSX: Saved Vulkan pipeline cache (12985 bytes)
+·! 0:00:01.561180 {Emulation Join Thread} RSX: Loaded Vulkan pipeline cache (93611565 bytes)
+·! 0:00:10.535014 {RSX [0x0000000]} RSX: Saved Vulkan pipeline cache (93611565 bytes)
+
+--- persisted caches on disk (EMAIN.SELF = full 3272-pipeline ISA cache) ---
+  ppu-*-EBOOT.BIN/vk_pipeline_cache.bin     : 12,985 bytes   (launcher stub)
+  ppu-*-EMAIN.SELF/vk_pipeline_cache.bin    : 93,611,565 bytes (game; the win)
+
+Result: warm-launch pipeline-compile phase zips vs cold full recompile (operator-confirmed).

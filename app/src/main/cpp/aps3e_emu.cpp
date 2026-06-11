@@ -507,8 +507,8 @@ namespace ae{
     }
     void init(){
 
-        const char* enable_log=getenv("APS3E_ENABLE_LOG");
-        if(enable_log&&strcmp(enable_log,"true")==0){
+        // [TEST BUILD] force logging on → external APS3E_LOG_DIR/rp3_log.txt (adb-readable)
+        {
             static std::unique_ptr<logs::listener> log_file = logs::make_file_listener(std::string(getenv("APS3E_LOG_DIR"))+"/rp3_log.txt", 1024*1024*1024);
         }
 
