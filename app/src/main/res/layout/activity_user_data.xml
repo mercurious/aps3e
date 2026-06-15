@@ -49,6 +49,28 @@
 				android:scrollbars="vertical" />
 		</LinearLayout>
 		
+		<!-- Shader Cache Manager -->
+		<LinearLayout
+			android:id="@+id/shader_cache_view"
+			android:layout_width="match_parent"
+			android:layout_height="match_parent"
+			android:orientation="vertical"
+			android:visibility="gone">
+
+			<Button
+				android:id="@+id/btn_shader_import"
+				android:layout_width="match_parent"
+				android:layout_height="wrap_content"
+				android:text="@string/import_shader_cache"
+				android:layout_margin="8dp" />
+
+			<ListView
+				android:id="@+id/list_shader_cache"
+				android:layout_width="match_parent"
+				android:layout_height="match_parent"
+				android:scrollbars="vertical" />
+		</LinearLayout>
+
 		<!-- ISO 目录管理 -->
 		<LinearLayout
 			android:id="@+id/iso_dir_view"

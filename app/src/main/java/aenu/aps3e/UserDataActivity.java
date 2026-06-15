@@ -72,11 +72,13 @@ public class UserDataActivity extends AppCompatActivity {
     public static final int PAGE_TYPE_COMPATIBILITY_TABLE = 3;
     public static final int PAGE_TYPE_DRIVER_MANAGER = 4;
     public static final int PAGE_TYPE_GAME_DATA_MANAGER = 5;
+    public static final int PAGE_TYPE_SHADER_CACHE_MANAGER = 6;
 
     private static final int REQUEST_EXPORT_PPU_CACHE = 6201;
     private static final int REQUEST_IMPORT_PPU_CACHE = 6202;
     private static final int REQUEST_SELECT_ISO_DIR = 6203;
     private static final int REQUEST_IMPORT_GAME_DATA = 6204;
+    private static final int REQUEST_IMPORT_SHADER_CACHE = 6205;
 
     private int current_page_type = PAGE_TYPE_MAIN;
 
@@ -127,6 +129,7 @@ public class UserDataActivity extends AppCompatActivity {
         layout_list.put(PAGE_TYPE_COMPATIBILITY_TABLE, findViewById(R.id.compatibility_table_view));
         layout_list.put(PAGE_TYPE_DRIVER_MANAGER, findViewById(R.id.list_driver));
         layout_list.put(PAGE_TYPE_GAME_DATA_MANAGER, findViewById(R.id.game_data_view));
+        layout_list.put(PAGE_TYPE_SHADER_CACHE_MANAGER, findViewById(R.id.shader_cache_view));
     }
 
     private void handle_back_pressed() {
@@ -144,6 +147,9 @@ public class UserDataActivity extends AppCompatActivity {
                 case PAGE_TYPE_PPU_CACHE_MANAGER:
                     show_ppu_cache_page();
                     break;
+                case PAGE_TYPE_SHADER_CACHE_MANAGER:
+                    show_shader_cache_page();
+                    break;
                 case PAGE_TYPE_ISO_DIR_MANAGER:
                     show_iso_dir_page();
                     break;
@@ -159,6 +165,8 @@ public class UserDataActivity extends AppCompatActivity {
             }
         } else if (current_page_type == PAGE_TYPE_PPU_CACHE_MANAGER) {
             handle_ppu_cache_item_click(adapter, position);
+        } else if (current_page_type == PAGE_TYPE_SHADER_CACHE_MANAGER) {
+            handle_shader_cache_item_click(adapter, position);
         } else if (current_page_type == PAGE_TYPE_ISO_DIR_MANAGER) {
             handle_iso_dir_item_click(adapter, position);
         } else if (current_page_type == PAGE_TYPE_COMPATIBILITY_TABLE) {
@@ -178,6 +186,7 @@ public class UserDataActivity extends AppCompatActivity {
 
         ArrayList<PageInfo> titles = new ArrayList<>();
         titles.add(new PageInfo(R.string.ppu_cache_manager, PAGE_TYPE_PPU_CACHE_MANAGER));
+        titles.add(new PageInfo(R.string.shader_cache_manager, PAGE_TYPE_SHADER_CACHE_MANAGER));
         titles.add(new PageInfo(R.string.iso_dir_manager, PAGE_TYPE_ISO_DIR_MANAGER));
         titles.add(new PageInfo(R.string.compatibility_table, PAGE_TYPE_COMPATIBILITY_TABLE));
         titles.add(new PageInfo(R.string.game_data_manager, PAGE_TYPE_GAME_DATA_MANAGER));
@@ -477,6 +486,209 @@ public class UserDataActivity extends AppCompatActivity {
         }
     }
 
+    // ---- Shader Cache Manager (mirrors PPU Cache Manager, scoped to shaders_cache/ = the GPU-portable layer) ----
+
+    private void show_shader_cache_page() {
+        View layout=select_layout(PAGE_TYPE_SHADER_CACHE_MANAGER);
+        ListView listShaderCache = (ListView) layout.findViewById(R.id.list_shader_cache);
+
+        final int titleResId = R.string.shader_cache_manager;
+        if(getSupportActionBar()!=null) {
+            getSupportActionBar().setTitle(getString(titleResId));
+        }
+
+        Button btn_import = (Button) layout.findViewById(R.id.btn_shader_import);
+        btn_import.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                MainActivity.request_file_select(UserDataActivity.this, REQUEST_IMPORT_SHADER_CACHE);
+            }
+        });
+
+        final File[] _all_ppu_cache_dirs = MainActivity.get_all_ppu_cache_dirs();
+        final ArrayList<File> list = new ArrayList<>();
+        if(_all_ppu_cache_dirs!=null) for(File dir:_all_ppu_cache_dirs) {
+            if(dir.getName().length()==9)
+                list.add(dir);
+        }
+
+        listShaderCache.setAdapter(new ArrayAdapter<File>(this, android.R.layout.simple_list_item_2, list){
+            @Override
+            public View getView(int position, View convertView, ViewGroup parent) {
+                if(convertView==null)
+                    convertView = getLayoutInflater().inflate(android.R.layout.simple_list_item_2, parent, false);
+                TextView text1 = convertView.findViewById(android.R.id.text1);
+                TextView text2 = convertView.findViewById(android.R.id.text2);
+                String serial = getItem(position).getName();
+                text1.setText(getGameName(serial));
+                text2.setText(serial);
+                return convertView;
+            }
+        });
+        listShaderCache.setOnItemClickListener(new AdapterView.OnItemClickListener() {
+            @Override
+            public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
+                handle_item_click((ListAdapter) parent.getAdapter(), position);
+            }
+        });
+
+        current_page_type = PAGE_TYPE_SHADER_CACHE_MANAGER;
+    }
+
+    private void handle_shader_cache_item_click(ListAdapter adapter, int position) {
+        File item = (File) adapter.getItem(position);
+        String[] options = {getString(R.string.export_shader_cache)};
+        new AlertDialog.Builder(this)
+                .setTitle(getGameName(item.getName()))
+                .setItems(options, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        switch (which) {
+                            case 0:
+                                export_shader_cache(item);
+                                break;
+                        }
+                    }
+                })
+                .show();
+    }
+
+    void export_shader_cache(File dir){
+        File save_to_dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "aps3e");
+        if (!save_to_dir.exists()) {
+            save_to_dir.mkdirs();
+        }
+        final String save_name = dir.getName() + "-shaders.zip";
+        final File save_to_file = new File(save_to_dir, save_name);
+
+        ProgressTask pt=new ProgressTask(this);
+        pt.set_done_task(new ProgressTask.UI_Task(){
+            @Override
+            public void run() {
+                Toast.makeText(UserDataActivity.this,String.format(getString(R.string.save_to),save_to_file.getAbsolutePath()),Toast.LENGTH_LONG).show();
+            }
+        }).call(new ProgressTask.Task(){
+            @Override
+            public void run(ProgressTask task) {
+                try {
+                    zip_shader_cache(dir, save_to_file);
+                    task.task_handler.sendEmptyMessage(ProgressTask.TASK_DONE);
+                } catch (Exception e) {
+                    task.task_handler.sendEmptyMessage(ProgressTask.TASK_FAILED);
+                }
+            }
+        });
+    }
+
+    private static boolean zip_shader_cache(File dir, File out_f) throws Exception {
+        FileOutputStream fos=null;
+        ZipOutputStream zos=null;
+        try{
+            fos=new FileOutputStream(out_f);
+            zos=new java.util.zip.ZipOutputStream(fos);
+            zip_shader_cache_file(dir, zos, "");
+        } finally {
+            if(zos!=null) zos.close();
+            if(fos!=null) fos.close();
+        }
+        return true;
+    }
+
+    private static void zip_shader_cache_file(File file, ZipOutputStream zos, String path) throws Exception {
+        String entryName = path + file.getName();
+        if (file.isDirectory()) {
+            File[] files = file.listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    zip_shader_cache_file(f, zos, entryName + "/");
+                }
+            }
+        } else if(("/"+entryName).contains("/shaders_cache/")){
+            ZipEntry zip_entry = new ZipEntry(entryName);
+            zos.putNextEntry(zip_entry);
+            try (FileInputStream fis = new FileInputStream(file)) {
+                byte[] buffer = new byte[16384];
+                int len;
+                while ((len = fis.read(buffer)) > 0) {
+                    zos.write(buffer, 0, len);
+                }
+            }
+            zos.closeEntry();
+        }
+    }
+
+    void handle_import_shader_cache(Uri uri) {
+        ProgressTask pt = new ProgressTask(this);
+        pt.set_done_task(new ProgressTask.UI_Task() {
+            @Override
+            public void run() {
+                Toast.makeText(UserDataActivity.this, R.string.import_shader_cache_done, Toast.LENGTH_SHORT).show();
+                show_shader_cache_page();
+            }
+        }).set_failed_task(new ProgressTask.UI_Task() {
+            @Override
+            public void run() {
+                Toast.makeText(UserDataActivity.this, R.string.import_shader_cache_failed, Toast.LENGTH_SHORT).show();
+            }
+        }).call(new ProgressTask.Task() {
+            @Override
+            public void run(ProgressTask task) {
+                try {
+                    import_shader_cache_from_uri(uri);
+                    task.task_handler.sendEmptyMessage(ProgressTask.TASK_DONE);
+                } catch (Exception e) {
+                    Log.e("APS3E", String.valueOf(e.getMessage()));
+                    e.printStackTrace();
+                    task.task_handler.sendEmptyMessage(ProgressTask.TASK_FAILED);
+                }
+            }
+        });
+    }
+
+    private void import_shader_cache_from_uri(Uri uri) throws Exception {
+        ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(uri, "r");
+        if (pfd == null) {
+            throw new RuntimeException("xx");
+        }
+        FileInputStream fis = new FileInputStream(pfd.getFileDescriptor());
+        ZipInputStream zis = new ZipInputStream(fis);
+
+        File cache_base_dir = get_ppu_cache_base_dir();
+        if (!cache_base_dir.exists()) {
+            cache_base_dir.mkdirs();
+        }
+
+        ZipEntry entry;
+        int extracted_count = 0;
+        while ((entry = zis.getNextEntry()) != null) {
+            if (entry.isDirectory()) { continue; }
+            String entry_name = entry.getName();
+            if (!("/"+entry_name).contains("/shaders_cache/")) {
+                zis.closeEntry();
+                continue;
+            }
+            String sub_path=entry_name.substring(0, entry_name.lastIndexOf("/"));
+            File targetDir = new File(cache_base_dir, sub_path);
+            if (!targetDir.exists()) { targetDir.mkdirs(); }
+            File out_f = new File(targetDir, entry_name.substring(entry_name.lastIndexOf("/") + 1));
+            FileOutputStream fos = new FileOutputStream(out_f);
+            byte[] buffer = new byte[16384];
+            int len;
+            while ((len = zis.read(buffer)) > 0) {
+                fos.write(buffer, 0, len);
+            }
+            fos.close();
+            extracted_count++;
+            zis.closeEntry();
+        }
+        zis.close();
+        fis.close();
+        pfd.close();
+        if (extracted_count == 0) {
+            throw new Exception("no shader cache files found");
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -495,6 +707,9 @@ public class UserDataActivity extends AppCompatActivity {
                 break;
             case REQUEST_IMPORT_PPU_CACHE:
                 handle_import_ppu_cache(uri);
+                break;
+            case REQUEST_IMPORT_SHADER_CACHE:
+                handle_import_shader_cache(uri);
                 break;
             case REQUEST_SELECT_ISO_DIR:
                 handle_add_iso_dir(uri);

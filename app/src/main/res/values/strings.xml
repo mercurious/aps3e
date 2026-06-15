@@ -18,6 +18,11 @@
 	<string name="export_ppu_cache">Export PPU Cache</string>
 	<string name="import_ppu_cache_done">PPU cache import completed</string>
 	<string name="import_ppu_cache_failed">PPU cache import failed</string>
+	<string name="shader_cache_manager">Shader Cache Manager</string>
+	<string name="import_shader_cache">Import Shader Cache</string>
+	<string name="export_shader_cache">Export Shader Cache</string>
+	<string name="import_shader_cache_done">Shader cache import completed</string>
+	<string name="import_shader_cache_failed">Shader cache import failed</string>
 	<string name="iso_dir_manager">ISO Directory Manager</string>
 	<string name="compatibility_table">Game Compatibility Table</string>
 	<string name="driver_manager">Driver Manager</string>
