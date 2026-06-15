@@ -572,6 +572,10 @@ public class UserDataActivity extends AppCompatActivity {
             public void run(ProgressTask task) {
                 try {
                     zip_shader_cache(dir, save_to_file);
+                    // Register with MediaStore so the export shows up in the Files app / system
+                    // share picker (files written via the File API aren't indexed automatically).
+                    android.media.MediaScannerConnection.scanFile(getApplicationContext(),
+                            new String[]{save_to_file.getAbsolutePath()}, new String[]{"application/zip"}, null);
                     task.task_handler.sendEmptyMessage(ProgressTask.TASK_DONE);
                 } catch (Exception e) {
                     task.task_handler.sendEmptyMessage(ProgressTask.TASK_FAILED);
