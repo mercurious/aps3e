@@ -9,6 +9,12 @@
 #include "Input/product_info.h"
 #include "cellPad.h"
 
+// ETK Cockpit pad-movie (frame-exact input record/replay) — see etk_pad_movie below.
+#include <fstream>
+#include <vector>
+#include <cstdlib>
+#include <cstdio>
+
 error_code sys_config_start(ppu_thread& ppu);
 error_code sys_config_stop(ppu_thread& ppu);
 
@@ -692,6 +698,284 @@ void pad_get_data(u32 port_no, CellPadData* data, bool get_periph_data = false)
 	}
 }
 
+// ===========================================================================
+// ETK Cockpit — pad input movie (frame-exact, TAS-style record / replay)  [v2.2]
+// ---------------------------------------------------------------------------
+// Records / replays the CellPadData the game reads via cellPadGetData(port 0).
+// Keyed to the game's OWN deterministic read cadence (not wall-clock), so it
+// survives emulation-speed variance (shader-compile stutters, thermal throttle)
+// — i.e. open-loop replay desync dissolves.
+//
+// v1 keyed frame 0 to launch and desynced cross-boot: the SPU cache builds a
+// different module count every boot (1195/1197/1198/1200) → the number of pad
+// polls before you ever touch the car varies → the replay cursor lands at a
+// different real moment than it was recorded → full-lap drift.
+//
+// v2 RACE-START CURSOR-SYNC. The boot variance lives entirely *before* the green
+// light; once the SPU cache is warm and you have car control the poll cadence is
+// deterministic. So we never record or replay the boot-variable region — the
+// operator hand-drives menus → start line every boot, then marks the region by
+// hand. Both streams enter the region from an identical game state → replay
+// survives a cold boot.
+//
+// v2.1 TOGGLE CHORD. A chord (edge-detected, one press = one toggle) drives a
+// state machine instead of a wall-clock window. Chord: R1 (DIGITAL2) + D-pad Down
+// (DIGITAL1). Both UNASSIGNED in GT5P's default layout, so recording AND replaying
+// them is a no-op for the car — the region anchors to the exact press frame with
+// NO masking/skipping (a mask-and-skip scheme would reintroduce hold-duration
+// variance). The chord can also be pulsed via a pad_movie.mark file touch.
+//
+// v2.2 THREE-MARK (rolling-start offset fix). GT5P forces a rolling start, whose
+// car state at MARK-IN is NOT reproducible (variable lead-in + human press timing)
+// → an open-loop lap from that anchor diverges immediately. So a 3rd mark moves
+// the anchor onto the LAP LINE, a reproducible track point:
+//   press 1 MARK-IN     at the rolling start  -> region: approach (offset segment)
+//   press 2 MARK-OFFSET at the lap line        -> region: laps; record stores the
+//           frame index of the line in a sidecar; replay RE-SYNCS the cursor to it
+//           (snapping past any approach drift) -> laps run from the reproducible anchor
+//   press 3 MARK-OUT    at the end             -> region: post_out (closed)
+// Replay drives the approach from the recorded data toward the line, clamping at
+// the boundary so lap inputs never leak out before the line; the MARK-OFFSET press
+// (operator signals the actual line crossing) is what cancels the offset.
+//
+// Triggers (operator/cockpit drops these via adb in $APS3E_DATA_DIR/cache/ before launch):
+//   pad_movie.mode   = one word: "record" | "replay"   (absent/empty => disabled)
+//   pad_movie.bin    = the recorded movie (written in record, read in replay)
+//   pad_movie.offset = lap-line boundary frame index (written at MARK-OFFSET in record,
+//                      read in replay; sidecar to bin — keep them paired)
+//   pad_movie.mark   = touch to fire one toggle pulse (scriptable alt to the chord;
+//                      NOT for timed runs — adb timing adds the variance we avoid)
+// Env APS3E_PAD_MOVIE also overrides the mode file, for a future in-app toggle.
+//
+// NOTE: movie format = raw CellPadData stream [approach | laps], lap line at offset.
+// v1/v2.1 movies must be re-recorded under v2.2 (no offset sidecar => offset 0).
+//
+// Every hook call runs under pad::g_pad_mutex (held by cellPadGetData), so the
+// state below needs no additional locking. Scope is port 0 (single-pad / TT).
+// Hooks cellPadGetData only; if a title reads via cellPadGetDataExtra and replay
+// desyncs, mirror the hook there too.
+// ===========================================================================
+namespace etk_pad_movie
+{
+	enum class play_mode { off, record, replay };
+	enum class region    { pre_in, approach, laps, post_out }; // before in / rolling-start approach / lap(s) / after out
+
+	// Mark chord: R1 (DIGITAL2 0x08) + D-pad Down (DIGITAL1 0x40). Unassigned in GT5P default,
+	// so recording AND replaying it is a no-op for the car -> region anchors to the exact press
+	// frame with no masking/skipping (frame[0] = mark-in press), giving zero hold-duration variance.
+	static constexpr u16 CHORD_D1 = CELL_PAD_CTRL_DOWN; // on CELL_PAD_BTN_OFFSET_DIGITAL1
+	static constexpr u16 CHORD_D2 = CELL_PAD_CTRL_R1;   // on CELL_PAD_BTN_OFFSET_DIGITAL2
+
+	struct movie_state
+	{
+		play_mode mode = play_mode::off;
+		region reg = region::pre_in;
+		bool inited = false;
+		bool chord_prev = false;           // last poll's chord state, for rising-edge toggle
+		std::string mark_path;             // <cache>/pad_movie.mark - scriptable toggle pulse
+		std::string offset_path;           // <cache>/pad_movie.offset - lap-line boundary frame index
+		std::ofstream out;                 // record sink (one CellPadData per game read)
+		std::vector<CellPadData> frames;   // replay source
+		usz cursor = 0;                    // replay position within the recorded region
+		usz offset = 0;                    // frame index of the lap line (approach -> laps boundary)
+		usz written = 0;                   // record: frames written so far
+	};
+
+	static movie_state s_state;
+
+	static std::string cache_dir()
+	{
+		if (const char* d = std::getenv("APS3E_DATA_DIR"); d && *d)
+			return std::string(d) + "/cache/";
+		return "/data/local/tmp/";
+	}
+
+	// Trigger resolution. aPS3e sets its env internally, and Android app launches don't
+	// inherit adb's env, so the operator/cockpit drops a one-word mode file via adb:
+	//   <cache>/pad_movie.mode = "record" | "replay"   (absent/empty => disabled)
+	// Env APS3E_PAD_MOVIE still overrides it, for a future in-app toggle.
+	static std::string read_mode(const std::string& dir)
+	{
+		std::string mode;
+		if (const char* mv = std::getenv("APS3E_PAD_MOVIE"); mv && *mv)
+			mode = mv;
+		else if (std::ifstream mf(dir + "pad_movie.mode"); mf.is_open())
+			std::getline(mf, mode);
+		while (!mode.empty() && (mode.back() == '\n' || mode.back() == '\r' || mode.back() == ' ' || mode.back() == '\t'))
+			mode.pop_back();
+		return mode;
+	}
+
+	static void ensure_inited()
+	{
+		if (s_state.inited)
+			return;
+		s_state.inited = true;
+
+		const std::string dir  = cache_dir();
+		const std::string mode = read_mode(dir);
+		if (mode.empty())
+			return;
+
+		const std::string path = dir + "pad_movie.bin";
+		s_state.mark_path = dir + "pad_movie.mark";
+		s_state.offset_path = dir + "pad_movie.offset";
+		// Clear any stale mark from a previous run so we only fire on a fresh press.
+		std::remove(s_state.mark_path.c_str());
+
+		if (mode == "record")
+		{
+			s_state.out.open(path, std::ios::binary | std::ios::trunc);
+			if (s_state.out.is_open())
+			{
+				s_state.mode = play_mode::record;
+				std::remove(s_state.offset_path.c_str()); // rewritten at MARK-OFFSET
+				cellPad.notice("ETK pad-movie: RECORD -> %s (R1+Down chord x3: MARK-IN at roll start, MARK-OFFSET at lap line, MARK-OUT at end)", path);
+			}
+			else
+			{
+				cellPad.error("ETK pad-movie: cannot open record file %s", path);
+			}
+		}
+		else if (mode == "replay")
+		{
+			std::ifstream in(path, std::ios::binary);
+			if (in.is_open())
+			{
+				CellPadData frame{};
+				while (in.read(reinterpret_cast<char*>(&frame), sizeof(CellPadData)))
+					s_state.frames.push_back(frame);
+				s_state.mode = play_mode::replay;
+				if (std::ifstream of(s_state.offset_path); of.is_open())
+				{
+					unsigned long long v = 0; of >> v; s_state.offset = static_cast<usz>(v);
+				}
+				cellPad.notice("ETK pad-movie: REPLAY <- %s (%u frames, lap line @ %u; R1+Down: MARK-IN at roll start, MARK-OFFSET at lap line)",
+					path, static_cast<u32>(s_state.frames.size()), static_cast<u32>(s_state.offset));
+			}
+			else
+			{
+				cellPad.error("ETK pad-movie: replay file not found %s", path);
+			}
+		}
+	}
+
+	// Is the R1+Down chord held in this live read?
+	static bool chord_held(const CellPadData* data)
+	{
+		const u16 d1 = static_cast<u16>(data->button[CELL_PAD_BTN_OFFSET_DIGITAL1]);
+		const u16 d2 = static_cast<u16>(data->button[CELL_PAD_BTN_OFFSET_DIGITAL2]);
+		return (d1 & CHORD_D1) == CHORD_D1 && (d2 & CHORD_D2) == CHORD_D2;
+	}
+
+	// One discrete mark pulse: a chord rising edge, or a (consumed) pad_movie.mark touch.
+	static bool mark_toggled(const CellPadData* data)
+	{
+		const bool chord = chord_held(data);
+		const bool rising = chord && !s_state.chord_prev;
+		s_state.chord_prev = chord;
+
+		bool file_pulse = false;
+		if (!s_state.mark_path.empty())
+		{
+			if (std::ifstream mf(s_state.mark_path); mf.is_open())
+			{
+				file_pulse = true;
+				std::remove(s_state.mark_path.c_str()); // consume -> one pulse per touch
+			}
+		}
+		return rising || file_pulse;
+	}
+
+	// Called under pad::g_pad_mutex, right after pad_get_data() fills the read the game sees.
+	static void on_get_data(u32 port_no, CellPadData* data)
+	{
+		if (port_no != 0 || !data)
+			return;
+
+		ensure_inited();
+
+		if (s_state.mode == play_mode::off || s_state.reg == region::post_out)
+			return; // disabled, or region closed: live input passes through
+
+		// 3-mark toggle: 1st = MARK-IN (roll start, approach opens), 2nd = MARK-OFFSET (lap line),
+		// 3rd = MARK-OUT (end). The lap line is a reproducible track point -> the offset anchor.
+		if (mark_toggled(data))
+		{
+			const bool rec = s_state.mode == play_mode::record;
+			if (s_state.reg == region::pre_in)
+			{
+				s_state.reg = region::approach;
+				cellPad.notice("ETK pad-movie: MARK-IN - %s approach open (rolling start)", rec ? "RECORD" : "REPLAY");
+				// fall through: this poll is frame[0] (start of the approach segment)
+			}
+			else if (s_state.reg == region::approach)
+			{
+				s_state.reg = region::laps;
+				if (rec)
+				{
+					s_state.offset = s_state.written; // lap-line boundary = frames written in the approach
+					if (std::ofstream of(s_state.offset_path, std::ios::trunc); of.is_open())
+						of << s_state.offset << "\n"; // sidecar so replay/synthesis know where laps begin
+					cellPad.notice("ETK pad-movie: MARK-OFFSET - lap line @ frame %u (laps begin)", static_cast<u32>(s_state.offset));
+				}
+				else
+				{
+					s_state.cursor = s_state.offset; // RE-SYNC to the lap data at the reproducible lap line
+					cellPad.notice("ETK pad-movie: MARK-OFFSET - resync to lap frame %u", static_cast<u32>(s_state.offset));
+				}
+				// fall through: this poll is the first lap frame
+			}
+			else // laps -> out
+			{
+				s_state.reg = region::post_out;
+				if (rec)
+				{
+					s_state.out.flush();
+					s_state.out.close();
+				}
+				cellPad.notice("ETK pad-movie: MARK-OUT - region closed (%u frames, lap line @ %u)",
+					static_cast<u32>(rec ? s_state.written : s_state.frames.size()), static_cast<u32>(s_state.offset));
+				return; // the mark-out poll is the boundary; don't record/replay it
+			}
+		}
+
+		if (s_state.reg == region::pre_in || s_state.reg == region::post_out)
+			return; // outside the region: live input passes through
+
+		switch (s_state.mode)
+		{
+		case play_mode::record:
+			s_state.out.write(reinterpret_cast<const char*>(data), sizeof(CellPadData));
+			s_state.out.flush(); // crash-safe: complete file even if the app is killed
+			s_state.written++;
+			break;
+		case play_mode::replay:
+			if (s_state.reg == region::approach)
+			{
+				// Drive toward the line on the approach data; clamp at the lap-line boundary so
+				// lap inputs never leak out before MARK-OFFSET (operator may reach the line late).
+				usz idx = s_state.cursor;
+				if (s_state.offset > 0 && idx >= s_state.offset)
+					idx = s_state.offset - 1; // hold the last approach frame until the lap line
+				if (idx < s_state.frames.size())
+					*data = s_state.frames[idx];
+				if (s_state.offset == 0 || s_state.cursor < s_state.offset)
+					s_state.cursor++;
+			}
+			else // laps
+			{
+				if (s_state.cursor < s_state.frames.size())
+					*data = s_state.frames[s_state.cursor++];
+				// past the recording: live input passes through (or chord = MARK-OUT)
+			}
+			break;
+		default:
+			break;
+		}
+	}
+}
+
 error_code cellPadGetData(u32 port_no, vm::ptr<CellPadData> data)
 {
 	cellPad.trace("cellPadGetData(port_no=%d, data=*0x%x)", port_no, data);
@@ -717,6 +1001,8 @@ error_code cellPadGetData(u32 port_no, vm::ptr<CellPadData> data)
 		return not_an_error(CELL_PAD_ERROR_NO_DEVICE);
 
 	pad_get_data(port_no, data.get_ptr());
+
+	etk_pad_movie::on_get_data(port_no, data.get_ptr()); // ETK Cockpit: record/replay the read
 
 	if (g_cfg.io.pad_debug_overlay && !g_cfg.video.debug_overlay && port_no == 0)
 	{

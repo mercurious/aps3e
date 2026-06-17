@@ -224,6 +224,8 @@ public class AboutActivity extends AppCompatActivity {
                 + " *恢复游戏内加载转圈图标和屏幕按键图标（打包Icons/ui） — Restored the in-game loading spinner and on-screen button glyphs (bundled Icons/ui, fork PR #128)\n"
                 + " *新增着色器缓存管理：导出/导入游戏的可移植着色器缓存 — New Shader Cache Manager: export/import a game's portable shader cache (fork PR #129)\n"
                 + " *导出的缓存现在注册到MediaStore，可在文件App中显示 — Exported caches now register with MediaStore so they appear in the Files app\n"
+                + "Shader Patch Edition (cont.) - 2026-06-16\n"
+                + " *ETK Cockpit：逐帧精确的手柄输入录制/回放（通过 cellPadGetData 挂钩，按游戏读取节奏对齐，可跨冷启动复现）。三标记方案（R1+下方向键组合键）：起跑点 MARK-IN、过起跑线 MARK-OFFSET、结束 MARK-OUT；回放时在起跑线重新对齐游标，规避 GT5P 强制滚动起步的不可复现偏移 — ETK Cockpit: frame-exact gamepad input record/replay via a cellPadGetData hook (keyed to the game's read cadence, survives a cold boot). Three-mark scheme (R1+D-pad-Down chord): MARK-IN at the rolling start, MARK-OFFSET at the lap line, MARK-OUT at the end; replay re-syncs the cursor at the lap line to defeat GT5P's non-reproducible rolling-start offset — fork branch pad-movie\n"
                 + " \n";
 
         return log;
