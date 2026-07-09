@@ -243,6 +243,38 @@ namespace rsx
 	rsx::texture_channel_remap_t fragment_texture::decoded_remap() const
 	{
 		u32 remap_ctl = registers[NV4097_SET_TEXTURE_CONTROL1 + (m_index * 8)];
+
+		// ETK #11912 road-flicker fix — backported from ETK GTK RPCS3 Edition 0.6.0 / RPCSX
+		// "Clanker" port (2026-07-09). GT5P/GT5/GT6 park the shadow-map TIU on a 1x1 fallback with a
+		// FULLY ZEROED CONTROL1 (= FORCE-ZERO x4 per the GCM enum), so every track draw samples a
+		// constant-0 shadow term and the whole track renders shadowed — upstream RPCS3 #11912, open
+		// since 2022. Real hardware treats the fully-unconfigured register as neutral (console renders
+		// lit; the 1x1's guest texel is never written — 22k+ probe sightings all 0x00000000), so
+		// decode it as ONE x4. Scoped to the exact confirmed signature: zeroed low word AND a 1x1
+		// texture (A8R8G8B8 fmt 0x85 -> the switch default below leaves remap_ctl untouched, so this
+		// injection IS the decode). This tree's decoded_remap() is byte-identical to the anchor lines
+		// the GTK/Clanker patch inserts between. Field-validated flicker-free on Adreno 650/ROCKNIX
+		// (Eiger/Daytona 100% clean); ON BY DEFAULT here too.
+		//   GTK_REMAP0_ONE=0      -> kill-switch: stock zero-decode (regression / on-device A/B baseline)
+		//   GTK_REMAP0_IDENTITY=1 -> identity-crossbar A/B variant (samples the 1x1's live content)
+		//   GTK_REMAP0_ONE=1      -> explicit ONE; outranks IDENTITY
+		static const char* const s_gtk_remap0_env = std::getenv("GTK_REMAP0_ONE");
+		static const bool g_gtk_remap0_one_explicit = s_gtk_remap0_env && *s_gtk_remap0_env == '1';
+		static const bool g_gtk_remap0_off = s_gtk_remap0_env && *s_gtk_remap0_env == '0';
+		static const bool g_gtk_remap0_identity = []() { const char* e = std::getenv("GTK_REMAP0_IDENTITY"); return e && *e == '1'; }();
+		const bool gtk_use_identity = g_gtk_remap0_identity && !g_gtk_remap0_one_explicit;
+		if ((!g_gtk_remap0_off || g_gtk_remap0_identity) && (remap_ctl & 0xFFFF) == 0
+			&& width() <= 1 && height() <= 1) [[unlikely]]
+		{
+			static atomic_t<bool> s_logged = false;
+			if (!s_logged.exchange(true))
+			{
+				rsx_log.warning("GTK-REMAP0: %s override engaged (TIU%u raw=0x%08x)",
+					gtk_use_identity ? "identity" : "force-ONE", m_index, remap_ctl);
+			}
+			remap_ctl = (remap_ctl & 0xFFFF0000u) | (gtk_use_identity ? 0xAAE4u : 0x55E4u);
+		}
+
 		u32 remap_override = (remap_ctl >> 16) & 0xFFFF;
 
 		switch (format() & ~(CELL_GCM_TEXTURE_LN | CELL_GCM_TEXTURE_UN))
