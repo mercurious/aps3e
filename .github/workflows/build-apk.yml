@@ -1,0 +1,118 @@
+# Build the aPS3e APK on GitHub's x86_64 runners.
+#
+# Why CI and not a laptop: the native side vendors LLVM + the emulator core
+# (~722 MB of C++ under app/src/main/cpp), which is a multi-hour, memory-hungry
+# build. It also cannot run on the aarch64 cloud box — Google ships NDK host
+# toolchains for linux-x86_64 / darwin / windows only, so an ARM Linux host
+# would need qemu or an unofficial NDK. GitHub's runners are x86_64 and free
+# for public repos, which makes them the correct home for this lane.
+#
+# Manual trigger only: this is expensive, and nobody wants it firing on a
+# README push.
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch / tag / SHA to build"
+        required: false
+        default: ""
+      build_type:
+        description: "Gradle build type"
+        required: true
+        default: debug
+        type: choice
+        options: [debug, release]
+
+# One build at a time per ref; a newer request cancels a stale queued one.
+concurrency:
+  group: build-apk-${{ github.ref }}-${{ inputs.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # The LLVM-inclusive native build is long. Default job cap is 6 h; this
+    # keeps a killed run from burning the full window before reporting.
+    timeout-minutes: 350
+
+    steps:
+      - name: Free disk space
+        # The runner ships ~25 GB free; the vendored LLVM build tree plus
+        # Gradle/CMake artifacts can crowd that. Dropping toolchains this build
+        # never touches buys back ~20 GB and costs under a minute.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/ndk \
+                      /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h / | tail -1
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          submodules: false          # none as of 2026-08; vendored in-tree
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install pinned NDK
+        # Must match app/build.gradle's ndkVersion exactly — AGP fails the
+        # configure step rather than silently substituting another NDK.
+        run: sdkmanager --install "ndk;27.0.12077973" "cmake;3.22.1"
+
+      - name: ccache
+        # The native build dominates wall-clock; without a warm ccache every
+        # run recompiles LLVM from scratch and risks the 6 h cap.
+        uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: aps3e-${{ inputs.build_type }}
+          max-size: 2G
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Assemble
+        # ccache is wired in via CMake's compiler-launcher hooks, passed through
+        # Gradle so build.gradle needs no CI-specific edits. The LLVM job
+        # throttles in build.gradle (COMPILE_JOBS=4 / LINK_JOBS=1) are already
+        # right for a 4-vCPU / 16 GB runner — leave them alone.
+        run: |
+          ./gradlew --no-daemon --stacktrace \
+            -Pandroid.native.buildOutput=verbose \
+            -PCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -PCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            assemble${{ inputs.build_type == 'release' && 'Release' || 'Debug' }}
+
+      - name: Report artifacts
+        if: always()
+        run: |
+          find app/build/outputs/apk -name '*.apk' -exec ls -lh {} + || true
+          find app/build/outputs/apk -name '*.apk' -exec sha256sum {} + || true
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: aps3e-${{ inputs.build_type }}-${{ github.run_number }}
+          path: app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.run_number }}
+          path: |
+            app/.cxx/**/*.log
+            app/build/reports/**
+          if-no-files-found: ignore
+          retention-days: 7
