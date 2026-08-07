@@ -15,6 +15,7 @@
 #   ./build_android.sh --debug
 #   ./build_android.sh --marker "pad-movie v2.2"  # recompile-proof gate
 #   ./build_android.sh --expect-cert <sha256>     # signing-identity gate
+#   ./build_android.sh --require-clean            # refuse to build a dirty tree
 #   ./build_android.sh --native                   # no container (host toolchain)
 #
 # Prerequisite: scripts/provision_android_toolchain.sh has run green.
@@ -30,6 +31,7 @@ BUILD_TYPE=release
 MARKER=""
 EXPECT_CERT=""
 NATIVE=0
+REQUIRE_CLEAN=0
 # The Air's 8 GB forced LINK_JOBS=1; a 23 GB node does not need that brake.
 LLVM_COMPILE_JOBS="${APS3E_LLVM_COMPILE_JOBS:-4}"
 LLVM_LINK_JOBS="${APS3E_LLVM_LINK_JOBS:-2}"
@@ -41,6 +43,7 @@ while [ $# -gt 0 ]; do
         --marker)  MARKER="${2:?--marker needs a value}"; shift 2 ;;
         --expect-cert) EXPECT_CERT="${2:?--expect-cert needs a value}"; shift 2 ;;
         --native)  NATIVE=1; shift ;;
+        --require-clean) REQUIRE_CLEAN=1; shift ;;
         -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
@@ -157,6 +160,25 @@ fi
 # ==========================================================
 VERNAME=$(RUN "grep -m1 'versionName' '$SRC/app/build.gradle' | sed 's/.*\"\\(.*\\)\".*/\\1/'" || echo unknown)
 COMMIT=$(RUN "git -C '$SRC' rev-parse --short=9 HEAD" 2>/dev/null || echo unknown)
+
+# Provenance: a commit id on an artifact built from a MODIFIED tree is a lie,
+# and it is the lie that is hardest to catch later. app/build.gradle is the
+# usual culprit — it is a real tracked file now, but any hand-edit or streamed
+# patch on the node leaves HEAD pointing somewhere the artifact did not come
+# from. Same law as the Turnip lane's embedded-git-sha check.
+DIRTY=$(RUN "git -C '$SRC' status --porcelain 2>/dev/null | wc -l" | tr -dc '0-9')
+DIRTY="${DIRTY:-0}"
+if [ "$DIRTY" -gt 0 ]; then
+    if [ "$REQUIRE_CLEAN" = 1 ]; then
+        fail "tree has $DIRTY modified/untracked path(s) — refusing to stamp an artifact
+       with commit $COMMIT that it was not built from. Commit and push, or drop
+       --require-clean to build a marked +dirty candidate."
+    fi
+    log "  WARNING           tree is DIRTY ($DIRTY paths) — artifact marked +dirty"
+    log "                    commit $COMMIT does NOT describe what was built"
+    COMMIT="${COMMIT}+dirty"
+fi
+
 ANAME="aps3e-${VERNAME}-${BUILD_TYPE}-${COMMIT}.apk"
 
 RUN "mkdir -p '$OUT'
@@ -166,6 +188,7 @@ RUN "mkdir -p '$OUT'
        echo \"artifact:   $ANAME\"
        echo \"size:       $SZ\"
        echo \"commit:     $COMMIT\"
+       echo \"tree:       \$([ '$DIRTY' -eq 0 ] && echo clean || echo '$DIRTY paths modified — NOT reproducible from that commit')\"
        echo \"versionName:$VERNAME\"
        echo \"libe.so:    $LIBSZ B sha256=$LIBSHA build-id=${BUILDID:-none}\"
        echo \"signer:     ${CERT:-unverified}\"
