@@ -86,7 +86,7 @@
 #include "Crypto/sha1.h"
 
 
-#include "Loader/iso.h"
+#include "Loader/ISO.h"
 #include "Loader/PUP.h"
 #include "Loader/TAR.h"
 #include "Loader/PSF.h"
