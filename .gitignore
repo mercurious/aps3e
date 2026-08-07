@@ -43,3 +43,4 @@ app/src/main/cpp/rpcs3/3rdparty/wolfssl/wolfssl/wrapper/CSharp/wolfSSL-TLS-Serve
 app/src/main/cpp/rpcs3/3rdparty/wolfssl/wolfssl/wrapper/CSharp/wolfSSL_CSharp/obj/
 
 app/src/main/cpp/rpcs3/b/
+artifacts/
