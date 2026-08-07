@@ -199,7 +199,11 @@ fi
 
 ANAME="aps3e-${VERNAME}-${BUILD_TYPE}-${COMMIT}.apk"
 
-RUN "mkdir -p '$OUT'
+# Each docker exec is a fresh login shell, so the toolchain env has to be
+# re-sourced here or the buildinfo records ndk=unknown — the one provenance
+# field this whole lane exists to pin down.
+RUN "[ -f /work/toolchain-env.sh ] && . /work/toolchain-env.sh
+     mkdir -p '$OUT'
      cp -f '$SRC/$APK_PATH' '$OUT/$ANAME'
      cd '$OUT' && sha256sum '$ANAME' > '$ANAME.sha256'
      {
