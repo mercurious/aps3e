@@ -162,6 +162,11 @@ if [ "$VERIFY_ONLY" = 0 ]; then
          apt-get update -qq
          apt-get install -y -qq --no-install-recommends $APT_PKGS >/dev/null"
 
+    # The container is root; /work/src is owned by the host user. Without this
+    # git refuses the repo ("detected dubious ownership") and every provenance
+    # lookup in build_android.sh comes back empty.
+    dex "git config --global --add safe.directory /work/src 2>/dev/null || true"
+
     # ---- Android SDK (cmdline-tools is pure Java — arch-independent) ----
     # Stamped with the pinned build id: "sdkmanager exists" is NOT a sufficient
     # guard, because an OLD cmdline-tools is exactly the failure mode here and

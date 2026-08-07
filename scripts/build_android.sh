@@ -166,7 +166,25 @@ COMMIT=$(RUN "git -C '$SRC' rev-parse --short=9 HEAD" 2>/dev/null || echo unknow
 # usual culprit — it is a real tracked file now, but any hand-edit or streamed
 # patch on the node leaves HEAD pointing somewhere the artifact did not come
 # from. Same law as the Turnip lane's embedded-git-sha check.
-DIRTY=$(RUN "git -C '$SRC' status --porcelain 2>/dev/null | wc -l" | tr -dc '0-9')
+# git must be INTERROGABLE before its answers mean anything. The container runs
+# as root against a repo owned by the host user, so git refuses it with
+# "detected dubious ownership" unless it is marked safe — and when git fails,
+# `status --porcelain | wc -l` prints 0, which reads exactly like a clean tree.
+# That made --require-clean pass without checking anything on the first green
+# build. A provenance gate that fails open is worse than no gate: treat an
+# unreadable repo as fatal, never as clean.
+RUN "git config --global --add safe.directory '$SRC' 2>/dev/null || true" >/dev/null 2>&1 || true
+if [ "$COMMIT" = "unknown" ] || [ -z "$COMMIT" ]; then
+    COMMIT=$(RUN "git -C '$SRC' rev-parse --short=9 HEAD 2>/dev/null" | tr -dc '0-9a-f' || true)
+fi
+[ -n "$COMMIT" ] || fail "cannot read git HEAD in $SRC — provenance is unverifiable.
+       Refusing to stamp an artifact with a commit id nobody can check."
+
+DIRTY=$(RUN "git -C '$SRC' status --porcelain 2>/dev/null | wc -l; echo rc=\$?" || true)
+case "$DIRTY" in
+    *rc=0*) DIRTY=$(printf '%s' "$DIRTY" | head -1 | tr -dc '0-9') ;;
+    *) fail "git status failed in $SRC — cannot tell a clean tree from an unreadable one" ;;
+esac
 DIRTY="${DIRTY:-0}"
 if [ "$DIRTY" -gt 0 ]; then
     if [ "$REQUIRE_CLEAN" = 1 ]; then
