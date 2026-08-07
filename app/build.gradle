@@ -1,0 +1,104 @@
+plugins {
+    alias(libs.plugins.android.application)
+}
+
+// Build-host knobs. Defaults reproduce the Air's build exactly; the etk-cloud
+// lane (23 GB, no thermal ceiling) overrides them on the gradlew command line
+// so the laptop's memory brakes do not follow the build onto a bigger box.
+def etkLlvmCompileJobs = (project.findProperty('etkLlvmCompileJobs') ?: '4').toString()
+def etkLlvmLinkJobs    = (project.findProperty('etkLlvmLinkJobs') ?: '1').toString()
+
+android {
+    namespace 'aenu.aps3e'
+    compileSdk 35
+    // r27d — the last r27 release, still clang-18. Chosen because the aarch64
+    // Linux host toolchain the etk-cloud lane uses starts at r27d (Google ships
+    // no aarch64 NDK at all), and AGP fails the configure step rather than
+    // substituting a near-miss revision. Bump both builders together.
+    ndkVersion "27.3.13750724"
+
+    defaultConfig {
+        applicationId "aenu.aps3e"
+        //applicationId "aenu.aps3e.premium"
+
+        minSdk 28
+        targetSdk 34
+        versionCode 20
+        versionName "1.19a"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        externalNativeBuild {
+            cmake {
+                abiFilters 'arm64-v8a'
+                cppFlags ''
+                // Throttle LLVM build memory on the 8GB build host (link is the big spike).
+                // BUILD_TESTING=OFF stops 3rdparty (curl) from compiling its broken test suite.
+                arguments "-DLLVM_PARALLEL_COMPILE_JOBS=" + etkLlvmCompileJobs,
+                          "-DLLVM_PARALLEL_LINK_JOBS=" + etkLlvmLinkJobs,
+                          "-DBUILD_TESTING=OFF"
+                // ccache is opt-in (-PetkCcache=1): a box without ccache installed
+                // is unaffected, and passing it never changes codegen.
+                if (project.hasProperty('etkCcache')) {
+                    arguments "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
+                              "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+                }
+            }
+        }
+
+        sourceSets{
+            main {
+                //jniLibs.srcDirs = ['src/main/lib']
+            }
+        }
+    }
+
+    signingConfigs {
+        release {
+        }
+        debug {
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // Sign release with the debug keystore so the optimized build still sideloads
+            signingConfig signingConfigs.debug
+        }
+        debug {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+
+
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.22.1'
+        }
+    }
+
+    packaging{
+        jniLibs.useLegacyPackaging = true
+    }
+}
+
+dependencies {
+
+    implementation libs.appcompat
+    implementation libs.material
+    implementation libs.activity
+    implementation libs.constraintlayout
+    implementation libs.preference
+    testImplementation libs.junit
+    androidTestImplementation libs.ext.junit
+    androidTestImplementation libs.espresso.core
+}

@@ -5,7 +5,12 @@ o/**
 .idea/
 local.properties
 
-app/build.gradle
+# NOTE (ETK fork): upstream ignores app/build.gradle so each builder fills in
+# their own signing info. This fork TRACKS it — the release buildType signs with
+# signingConfigs.debug, so the file holds no keystore path and no password. It
+# has to be tracked: it carries ndkVersion and the LLVM job throttles, and a
+# clean clone cannot build without it (that is why the CI lane never worked).
+# Keep it out of any upstream PR.
 
 aps3e.keystore
 aps3e.jks
