@@ -15,6 +15,12 @@ Compilation Steps (Windows using Android Studio):
 
 Rename app/build.gradle.bak to app/build.gradle  and complete the signing information.
 
+> **ETK fork note.** The step above is upstream's and does **not** apply to this
+> fork: `app/build.gradle` is tracked here, so a clean clone already has it.
+> Builds run on the etk-cloud forge — see [BUILDING.md](BUILDING.md) and
+> [CLAUDE.md](CLAUDE.md). The old `aps3e-build.sparseimage` toolchain on the
+> macOS external drive is **retired**; do not build from it.
+
 LICENSE:
 
 Please check the LICENSE file under the appropriate file header and directory for detailed information.
