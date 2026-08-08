@@ -130,12 +130,28 @@ log "  libe.so           $LIBSZ B  build-id=${BUILDID:-none}"
 log "  libe.so sha256    $LIBSHA"
 
 # 4. Optional recompile proof against a string from the change under test.
+# Comma-separated, and every one must be present. This is the gate that catches
+# a build made from the WRONG BRANCH, not just a stale cache — the first cloud
+# APK was built one commit behind the ETK-tuned tip, shipped without
+# GTK_REMAP0_ONE, and every other gate went green because the toolchain was
+# fine and the artifact was well-formed. Only the operator reproducing the
+# road-flicker on the rig caught it. Assert the ETK patches by name.
 if [ -n "$MARKER" ]; then
-    if RUN "strings /tmp/apkchk/lib/arm64-v8a/libe.so | grep -qF '$MARKER'"; then
-        log "  marker            present: '$MARKER'"
-    else
-        fail "marker '$MARKER' NOT in libe.so — the native side did not rebuild your change"
-    fi
+    MISSING_MARKERS=""
+    OLDIFS=$IFS; IFS=','
+    for m in $MARKER; do
+        [ -n "$m" ] || continue
+        if RUN "strings /tmp/apkchk/lib/arm64-v8a/libe.so | grep -qF '$m'"; then
+            log "  marker            present: '$m'"
+        else
+            log "  marker            MISSING: '$m'"
+            MISSING_MARKERS="$MISSING_MARKERS $m"
+        fi
+    done
+    IFS=$OLDIFS
+    [ -z "$MISSING_MARKERS" ] || fail "libe.so is missing:$MISSING_MARKERS
+       Either the native side did not rebuild, or this build is off a branch
+       that does not carry those patches. Check: git cherry <branch> origin/etk-tune"
 fi
 
 # 5. Signing identity. A box that minted its own debug keystore produces an APK
